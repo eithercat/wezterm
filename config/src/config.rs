@@ -2058,7 +2058,7 @@ pub(crate) fn validate_domain_name(name: &str) -> Result<(), String> {
 /// <https://github.com/wez/wezterm/issues/2771>
 /// <https://github.com/wez/wezterm/issues/2630>
 fn default_macos_forward_mods() -> Modifiers {
-    Modifiers::SHIFT
+    Modifiers::NONE
 }
 
 fn default_colr_rasterizer() -> FontRasterizerSelection {

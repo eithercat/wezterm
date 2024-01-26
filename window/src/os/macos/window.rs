@@ -2455,6 +2455,7 @@ impl WindowView {
 
         let config_handle = config::configuration();
         let use_ime = config_handle.use_ime;
+        let ime_modifier_mask = config_handle.macos_forward_to_ime_modifier_mask;
         let send_composed_key_when_left_alt_is_pressed =
             config_handle.send_composed_key_when_left_alt_is_pressed;
         let send_composed_key_when_right_alt_is_pressed =
@@ -2473,24 +2474,31 @@ impl WindowView {
             modifiers
         };
 
-        let alt_mods = Modifiers::LEFT_ALT | Modifiers::RIGHT_ALT | Modifiers::ALT;
-        let only_left_alt = (modifiers & alt_mods) == (Modifiers::LEFT_ALT | Modifiers::ALT);
-        let only_right_alt = (modifiers & alt_mods) == (Modifiers::RIGHT_ALT | Modifiers::ALT);
+        // Are left/right alt down and operating as a conventional alt modifier?
+        let strict_left_alt_is_down = modifiers.intersects(Modifiers::LEFT_ALT)
+            && !send_composed_key_when_left_alt_is_pressed;
+        let strict_right_alt_is_down = modifiers.intersects(Modifiers::RIGHT_ALT)
+            && !send_composed_key_when_right_alt_is_pressed;
 
-        // Also respect `send_composed_key_when_(left|right)_alt_is_pressed` configs
-        // when `use_ime` is true.
-        let forward_to_ime = {
-            if only_left_alt && !send_composed_key_when_left_alt_is_pressed {
-                false
-            } else if only_right_alt && !send_composed_key_when_right_alt_is_pressed {
-                false
-            } else {
-                modifiers.is_empty()
-                    || modifiers.intersects(config_handle.macos_forward_to_ime_modifier_mask)
-            }
-        };
+        // Set of active modifiers which are not associated with printable text,
+        // and so will always result in control codes (modulo the IME modifier).
+        let nontext_modifiers = modifiers
+            & ((Modifiers::SUPER | Modifiers::CTRL | Modifiers::LEFT_CTRL | Modifiers::RIGHT_CTRL)
+                | (if strict_left_alt_is_down && strict_right_alt_is_down {
+                    Modifiers::ALT | Modifiers::LEFT_ALT | Modifiers::RIGHT_ALT
+                } else if strict_left_alt_is_down {
+                    Modifiers::ALT | Modifiers::LEFT_ALT
+                } else if strict_right_alt_is_down {
+                    Modifiers::ALT | Modifiers::RIGHT_ALT
+                } else {
+                    Modifiers::NONE
+                }));
 
-        if key_is_down && use_ime && forward_to_ime {
+        // Does the set of active modifiers match the IME modifier mask?
+        let ime_modifier_is_active = modifiers & ime_modifier_mask == ime_modifier_mask
+            && (nontext_modifiers - ime_modifier_mask).is_empty();
+
+        if key_is_down && use_ime && (ime_modifier_is_active || nontext_modifiers.is_empty()) {
             if let Some(myself) = Self::get_this(this) {
                 let mut inner = myself.inner.borrow_mut();
                 inner.key_is_down.replace(key_is_down);
@@ -2606,10 +2614,8 @@ impl WindowView {
                         return;
                     }
                 }
-            } else if (only_left_alt && !send_composed_key_when_left_alt_is_pressed)
-                || (only_right_alt && !send_composed_key_when_right_alt_is_pressed)
-            {
-                // Take the unmodified key only!
+            } else if strict_left_alt_is_down || strict_right_alt_is_down {
+                // Take the uncomposed key only.
                 match key_string_to_key_code(unmod) {
                     Some(key) => (key, None),
                     None => return,
@@ -2639,11 +2645,19 @@ impl WindowView {
                 }
             };
 
-            let modifiers = if raw_key.is_some() {
-                Modifiers::NONE
-            } else {
-                modifiers
-            };
+            // Drop any modifiers which at this point will be irrelevant to
+            // determining the resulting escape sequence.
+            let modifiers = nontext_modifiers
+                // Retain SHIFT to differentiate printable inputs that don't
+                // have an uppercased representation (e.g. whitespace), and ALT
+                // in the case that we didn't consume it when composing keys.
+                // This should probably also drop any applied IME mask, but that's
+                // complicated by the fact that there are distinct left/right
+                // modifers, and also that the default mod mask value is SHIFT!
+                | modifiers.intersection(
+                    (Modifiers::SHIFT | Modifiers::LEFT_SHIFT | Modifiers::RIGHT_SHIFT)
+                        | (Modifiers::ALT | Modifiers::LEFT_ALT | Modifiers::RIGHT_ALT),
+                );
 
             let event = KeyEvent {
                 key,
